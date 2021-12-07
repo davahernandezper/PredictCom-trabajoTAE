@@ -1,0 +1,14 @@
+name: app_tae
+title: app_tae
+username:
+account: davalej
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5278343
+bundleId: 5335694
+url: https://davalej.shinyapps.io/app_tae/
+when: 1638818589.06357
+lastSyncTime: 1638818589.06357
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: .RDataTmp|base_accidentes.zip|logo.png|riesgo_barrio.zip

@@ -1,0 +1,14 @@
+name: predict_accidents
+title: predict_accidents
+username:
+account: davalej
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5278561
+bundleId: 5336863
+url: https://davalej.shinyapps.io/predict_accidents/
+when: 1638836046.45369
+lastSyncTime: 1638836046.45369
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: .RData|.RDataTmp|base_accidentes.zip|logo.png|riesgo_barrio.zip

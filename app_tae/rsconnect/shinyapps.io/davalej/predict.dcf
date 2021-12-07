@@ -1,0 +1,14 @@
+name: predict
+title: predict
+username:
+account: davalej
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5278479
+bundleId: 5335723
+url: https://davalej.shinyapps.io/predict/
+when: 1638819083.03048
+lastSyncTime: 1638819083.03048
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: .RData|.RDataTmp|barrios_med/Barrio_Vereda.cpg|barrios_med/Barrio_Vereda.dbf|barrios_med/Barrio_Vereda.prj|barrios_med/Barrio_Vereda.shp|barrios_med/Barrio_Vereda.shx|base_accidentes.csv|base_accidentes.zip|base_modelos.csv|logo.png|riesgo_barrio.csv|riesgo_barrio.zip

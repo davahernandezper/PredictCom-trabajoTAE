@@ -1,0 +1,604 @@
+---
+title: "Untitled"
+author: "David Alejandro Hernandez Perez"
+date: "20/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##librerias que usaremos para graficar el mapa
+```{r, warning=FALSE, include=FALSE, results='hide'}
+library(leaflet)
+library(leaflet.extras)
+library(rworldxtra)
+library(raster)
+library(sf)
+library(tidyverse)
+library(kableExtra)
+library(readr) #Leer archivo csv
+library(dplyr) #Manipular el dataset
+library(tidyr) #Separar columna
+library(ggplot2) #Hacer el mapa
+library(DT) #(Opcional) para visualizar la db estilo Excel
+library(sqldf)
+library(vegan)
+library(plotly)
+library(lubridate)
+
+
+##para los modelos
+require(mixlm)
+library(randomForest)
+library(tree)
+library(MASS)
+
+
+##para las dummies
+library(caret)
+library(class)
+library(e1071)
+library(FNN) 
+library(gmodels) 
+library(psych)
+
+
+```
+
+#LIMPIEZA DE LOS DATOS
+
+Cargamos los datos
+```{r}
+accidentes_prev <- read.csv("incidentes_viales.csv",header = TRUE,
+                           sep = ";", dec = ",")
+#kable(head(accidentes_prev), digits=3)
+```
+
+Separacion de la variable LOCATION para obtener: latitud y longitud
+```{r}
+accidentes_med <- accidentes_prev %>%
+#Eliminamos parÃ©ntesis
+mutate(Ubicacion2 = gsub('[][]', '', LOCATION)) %>%
+#Separamos columna con separate de tidyr
+separate(Ubicacion2, c("long", "lat"), sep=", ") %>%
+#Convertimos Lat y Long a double o valor numÃ©rico
+mutate(latitude = as.numeric(lat), longitude =as.numeric(long))
+```
+
+Estandarizamos todas la variables para que queden todas bajo un mismo concepto en cada una de sus categorias, por ejemplo, la variable CLASE_ACCIDENTE tiene las dos clases llamadas: "Caida Ocupante" y "Caida de Ocupante", por lo tanto la re-etiquetaremos para que ambas opciones queden como sigue: "Caida ocupante".
+```{r}
+datos_cor1 <- sqldf('
+SELECT
+    CASE WHEN YEAR = "2019\\r" THEN "2019" ELSE YEAR END AS YEAR,
+    CBML,
+    CASE WHEN TRIM(CLASE_ACCIDENTE) IN (
+        "Caida Ocupante",
+        "Caida de Ocupante"
+    ) THEN "Caida ocupante" ELSE CLASE_ACCIDENTE END AS CLASE_ACCIDENTE,
+    DIRECCION,
+    DIRECCION_ENCASILLADA,
+    DISENO,
+    EXPEDIENTE,
+    FECHA_ACCIDENTE,
+    FECHA_ACCIDENTES,
+    GRAVEDAD_ACCIDENTE,
+    MES,
+    NRO_RADICADO,
+    NUMCOMUNA,
+    BARRIO,
+    COMUNA,
+    LOCATION,
+    X,
+    Y,
+    latitude,
+    longitude
+FROM
+    accidentes_med
+  ')
+#summary(accidentes_med)
+```
+
+
+Ahora, quitamos las observaciones que tienen las variables: CLASE_ACCIDENTE, DISENO y EXPEDIENTE nulas, las cuales solo representan un 0.4% de los datos, es decir 1159.
+```{r}
+datos_cor2 <- sqldf('
+SELECT
+    YEAR,
+    CBML,
+    CLASE_ACCIDENTE,
+    DIRECCION,
+    DIRECCION_ENCASILLADA,
+    DISENO,
+    EXPEDIENTE,
+    FECHA_ACCIDENTE,
+    FECHA_ACCIDENTES,
+    GRAVEDAD_ACCIDENTE,
+    MES,
+    NRO_RADICADO,
+    NUMCOMUNA,
+    BARRIO,
+    COMUNA,
+    LOCATION,
+    X,
+    Y,
+    latitude,
+    longitude
+FROM
+    datos_cor1
+WHERE 
+    (CLASE_ACCIDENTE <> "") AND (DISENO <> "") AND (EXPEDIENTE <> "")
+  ')
+```
+
+```{r}
+#write.table(datos_cor2, file = "accidentes1.csv")
+```
+
+```{r}
+datos_cor2$Fecha_accid = parse_date_time(datos_cor2$FECHA_ACCIDENTES, "ymd HMS")
+str(datos_cor2$Fecha_accid)
+```
+
+```{r}
+datos_cor2$fecha = date(datos_cor2$Fecha_accid)
+datos_cor2$dia = day(datos_cor2$Fecha_accid)
+datos_cor2$hora_acc = format(datos_cor2$Fecha_accid, format = "%H:%M:%S")
+```
+
+```{r}
+datos_cor2 <- sqldf('
+      SELECT *,
+       CASE WHEN hora_acc BETWEEN "07:00:00" and "08:30:00" OR hora_acc BETWEEN "17:30:00" and "19:00:00" THEN 1 ELSE 0 END AS hora_pico
+      FROM datos_cor2
+      ')
+
+```
+
+```{r}
+fest <- read_excel("festivos_V3.xlsx")
+
+accidentes <- left_join(datos_cor2, fest, 
+              by = c("fecha" = "FECHA"))
+```
+
+```{r}
+#write.table(accidentes, file = "base_accidentes.csv")
+```
+
+
+
+###################################################
+#------------------- CLUSTERS --------------------#
+###################################################
+
+Cargamos la base de datos con las fechas y los festivos calculados: dejando de un lado las comunas que no tiene geolocalización
+```{r}
+
+accidentes <- read.csv("base_accidentes.csv",header = TRUE,sep = ";", dec = ",")
+
+#quitamos las comunas que no tienen localizacion
+accidentes = accidentes %>% filter(!COMUNA %in% c('0',
+'No Georef','Sin Inf',''))
+```
+
+Realizamos el conjunto entre barrio y comuna para obtener el numero de accidentes:
+```{r}
+barrios = accidentes %>% distinct(COMUNA, BARRIO)
+
+accidentes$NUM_ACCIDENTES = ave(accidentes$fecha, accidentes$BARRIO, FUN = length)
+
+barrios$NUM_ACCIDENTES = as.integer((accidentes %>% distinct(COMUNA, BARRIO, .keep_all = TRUE))$NUM_ACCIDENTES)
+```
+
+Calculamos los heridos y los atropellos para cada barrio:
+```{r}
+heridos = c()
+for (i in 1:nrow(barrios)) {
+  row = barrios[i, ]
+  heridos = c(heridos, nrow(accidentes[accidentes$GRAVEDAD_ACCIDENTE=="Con heridos" & accidentes$BARRIO==row$BARRIO & accidentes$COMUNA==row$COMUNA,]))
+}
+barrios$HERIDOS = heridos
+
+
+atropellos = c()
+for (i in 1:nrow(barrios)) {
+  row = barrios[i, ]
+  atropellos = c(atropellos, nrow(accidentes[accidentes$CLASE_ACCIDENTE=="Atropello" & accidentes$BARRIO==row$BARRIO & accidentes$COMUNA==row$COMUNA,]))
+}
+barrios$ATROPELLOS = atropellos
+```
+
+Usamos k.means para obtener una idea de cuantos grupos crear y el número escogido fue el 4
+```{r}
+set.seed(1036955885)
+km.out = kmeans(barrios[, 3:5], 4, nstart = 20)
+```
+
+y esos 4 grupos calculados anteriormente, tendrán los siguientes nombres:
+```{r}
+bajo = barrios[factor(km.out$cluster) == "1", ]
+```
+
+```{r}
+medio_bajo = barrios[factor(km.out$cluster) == "2", ]
+```
+
+```{r}
+medio_alto = barrios[factor(km.out$cluster) == "3", ]
+```
+
+```{r}
+alto = barrios[factor(km.out$cluster) == "4", ]
+```
+
+
+Unimos a la base de datos de riesgo los grupos que calculamos para lograr obtener ahora si una base con la clasificación de riesgo por barrio y comuna
+```{r}
+barrios$RIESGO_NUMERICO = km.out$cluster
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "1"] = "Bajo"
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "2"] = "Medio_bajo"
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "3"] = "Medio_alto"
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "4"] = "Alto"
+
+fig = plot_ly(barrios, x = ~NUM_ACCIDENTES, y = ~HERIDOS, z = ~ATROPELLOS,  color = ~RIESGO)
+fig = fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = '# Accidentes'),
+                     yaxis = list(title = '# Heridos'),
+                     zaxis = list(title = '# Atropellos')))
+fig
+```
+
+```{r}
+#write.csv(barrios,"riesgo.csv", row.names = FALSE, fileEncoding = "UTF-8")
+```
+
+obtenemos la base de datos de riesgo para cada barrio y la descargamos
+```{r}
+riesgo_barrio <- sqldf('
+      with datos as (
+      SELECT
+        DISTINCT barrio, 
+        case when riesgo = "Bajo" then 1
+             when riesgo = "Medio_bajo" then 2
+             when riesgo = "Medio_alto" then 3
+             when riesgo = "Alto" then 4
+        end as riesgo
+      FROM barrios)
+      
+      select * from datos')
+
+write.csv(riesgo_barrio,"riesgo_barrio.csv", row.names = FALSE, fileEncoding = "UTF-8")
+
+```
+
+
+
+
+#-#######################-#######################-#
+#-------------------- MODELOS --------------------#
+#-#######################-#######################-#
+
+Re-etiquetamos las comunas con su respectivo numero y de igual manera excluimos las comunas de las que no conocemos su geolocalizacion como por ejemplo; "", "0", "No Georef" y "Sin Inf"
+```{r}
+try1 <- sqldf('
+  with datos as (
+      select 
+        *,
+        case when trim(comuna) = "Laureles Estadio" then 11
+             when trim(comuna) = "Castilla" then 5
+             when trim(comuna) = "El Poblado" then 14
+             when trim(comuna) = "La Candelaria" then 10
+             when trim(comuna) = "Aranjuez" then 4
+             when trim(comuna) = "San Javier" then 13
+             when trim(comuna) = "Belen" then 16
+             when trim(comuna) = "Guayabal" then 15
+             when trim(comuna) = "Robledo" then 7
+             when trim(comuna) = "Corregimiento de San Antonio de Prado" then 80
+             when trim(comuna) = "Popular" then 1
+             when trim(comuna) = "La America" then 12
+             when trim(comuna) = "Corregimiento de San Cristobal" then 60
+             when trim(comuna) = "Corregimiento de Altavista" then 70
+             when trim(comuna) = "Villa Hermosa" then 8
+             when trim(comuna) = "Manrique" then 3
+             when trim(comuna) = "Buenos Aires" then 9
+             when trim(comuna) = "Corregimiento de Santa Elena" then 90
+             when trim(comuna) = "Santa Cruz" then 2
+             else 0
+        end as numcomuna2
+      from
+        accidentes)
+  select * from datos where comuna not in ("", "0", "No Georef", "Sin Inf")')
+
+#sqldf('select count(*) from try1 where comuna is null or comuna = "" or comuna ="0" or comuna = "No Georef" or comuna = "Sin Inf"')
+#sqldf('select distinct comuna from try1')
+
+
+##write.table(try1, file = "accidentes2.csv")
+```
+
+Creamos las variables dummy para las variables que tiene mas de dos categorias y que usaremos en los modelos y aparte lo que hacemos es adicionar a la base de datos general el nivel de riesgo dependiendo del barrio. La base de datos llamadas try3 será con la que haremos los modelos:
+```{r}
+CLASE_ACCIDENTE2 <- as.data.frame(dummy.code(try1$CLASE_ACCIDENTE))
+DISENO2 <-as.data.frame(dummy.code(try1$DISENO))
+GRAVEDAD_ACCIDENTE2 <-as.data.frame(dummy.code(try1$GRAVEDAD_ACCIDENTE))
+riesgo2 <-as.data.frame(dummy.code(try1$GRAVEDAD_ACCIDENTE))
+
+try2 <- cbind(try1, CLASE_ACCIDENTE2, DISENO2, GRAVEDAD_ACCIDENTE2)
+
+names(try2)[26] = "festivo"
+names(try2)[27] = "fines_semana"
+names(try2)[30] = "choque"
+names(try2)[31] = "otro"
+names(try2)[32] = "atropello"
+names(try2)[33] = "caida_ocupante"
+names(try2)[34] = "volcamiento"
+names(try2)[35] = "incendio"
+names(try2)[36] = "tramo_de_via"
+names(try2)[37] = "interseccion"
+names(try2)[38] = "lote_o_predio"
+names(try2)[39] = "glorieta"
+names(try2)[40] = "paso_elevado"
+names(try2)[41] = "puente"
+names(try2)[42] = "ciclo_ruta"
+names(try2)[43] = "paso_inferior"
+names(try2)[44] = "paso_a_nivel"
+names(try2)[45] = "tunel"
+names(try2)[46] = "via_peatonal"
+names(try2)[47] = "ponton"
+names(try2)[48] = "con_heridos"
+names(try2)[49] = "solo_danos"
+names(try2)[50] = "con_muertos"
+
+
+
+
+
+
+try2 <- try2[,-19]
+try2 <- try2[,-19]
+
+library(readr) #Leer archivo csv
+library(dplyr) #Manipular el dataset
+library(tidyr) #Separar columna
+library(ggplot2) #Hacer el mapa
+library(DT) #(Opcional) para visualizar la db estilo Excel
+
+try2 <- try2 %>%
+#Eliminamos parÃ©ntesis
+mutate(Ubicacion2 = gsub('[][]', '', LOCATION)) %>%
+#Separamos columna con separate de tidyr
+separate(Ubicacion2, c("long", "lat"), sep=", ") %>%
+#Convertimos Lat y Long a double o valor numÃ©rico
+mutate(latitude = as.numeric(lat), longitude =as.numeric(long))
+
+
+
+riesgos = c()
+for (i in 1:nrow(try2)) {
+  b = nrow(bajo[bajo$BARRIO == try2[i,]$BARRIO,])
+  mb = nrow(medio_bajo[medio_bajo$BARRIO == try2[i,]$BARRIO,])
+  ma = nrow(medio_alto[medio_alto$BARRIO == try2[i,]$BARRIO,])
+  a = nrow(alto[alto$BARRIO == try2[i,]$BARRIO,])
+  if (b > 0) {
+    riesgos = c(riesgos, "Bajo")
+  } else if (mb > 0) {
+    riesgos = c(riesgos, "Medio_bajo")
+  } else if (ma > 0) {
+    riesgos = c(riesgos, "Medio_alto")
+  } else {
+    riesgos = c(riesgos, "Alto")
+  }
+}
+try2$RIESGO = as.factor(riesgos)
+
+
+
+riesgo2 <-as.data.frame(dummy.code(try2$RIESGO))
+try2 <- cbind(try2, riesgo2)
+
+
+try3 <- sqldf('
+    SELECT
+      count(*) as numero_accidentes,
+      COMUNA,
+      fecha,
+      YEAR,
+      MES,
+      dia,
+      numcomuna2,
+      Bajo,
+      Medio_bajo,
+      Medio_alto,
+      Alto,
+      festivo,
+      fines_semana,
+      hora_pico,
+      con_heridos,
+      con_muertos,
+      solo_danos,
+      atropello,
+      incendio,
+      volcamiento,
+      caida_ocupante,
+      choque,
+      otro,
+      paso_a_nivel,
+      puente,
+      via_peatonal,
+      ciclo_ruta,
+      glorieta,
+      paso_elevado,
+      interseccion,
+      lote_o_predio,
+      paso_inferior,
+      tramo_de_via,
+      tunel,
+      ponton
+    
+  FROM
+    try2
+  GROUP BY 2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34
+  ')
+
+write.table(try3, file = "base_modelos.csv")
+```
+
+
+
+Iniciamos con un modelo de bosque aleatorio:
+```{r}
+train <- try3[which(try3$YEAR %in% c(2014,2015,2016,2017)),]
+test <- try3[which(try3$YEAR %in% c(2018,2019)),]
+
+m1 <- randomForest(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
+                   fines_semana+hora_pico+con_heridos+con_muertos+
+                   solo_danos+atropello+incendio+volcamiento+
+                   caida_ocupante+choque+otro+paso_a_nivel+puente+
+                   via_peatonal+ciclo_ruta+glorieta+paso_elevado+
+                   interseccion+lote_o_predio+paso_inferior+
+                   tramo_de_via+tunel+ponton+Bajo+Medio_bajo+Medio_alto+Alto,
+                   data = train,
+                   importance = TRUE,ntree = 100)
+
+summary(m1)
+
+
+pre1 <- predict(m1, test)
+msetrain <- mean((train$numero_accidentes - predict(m1))^2)
+
+#MSE del conjunto de prueba
+msetest <- mean((test$numero_accidentes - pre1)^2)
+
+#variacion de los MSE
+variacion_mse <- (msetest/msetrain)-1
+msetest
+msetrain
+variacion_mse
+
+cat("R Cuadrado \n")
+R2 = cor(test$numero_accidentes, pre1)^2
+R2
+cat("R Cuadrado ajustado \n")
+1 - ((1 - R2) * (nrow(try3) - 1) / (nrow(try3) - ncol(try3) - 1))
+```
+Luego como vemos que tenemos un R cuadrado y el R cuadrado ajustado iguales a 0.48933 y 0.48924 respectivamente, decidimos mirar que variables no estan ayudandonos en el modelo:
+```{r}
+library(car)
+##seleccion de variables
+formula <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
+                   fines_semana+hora_pico+con_heridos+con_muertos+
+                   solo_danos+atropello+incendio+volcamiento+
+                   caida_ocupante+choque+otro+paso_a_nivel+puente+
+                   via_peatonal+ciclo_ruta+glorieta+paso_elevado+
+                   interseccion+lote_o_predio+paso_inferior+
+                   tramo_de_via+tunel+ponton+Bajo+Medio_bajo+Medio_alto+Alto)
+
+mod_sat <- lm(formula, data = try3)
+
+summary(mod_sat)
+
+coras <-  cor(try3)
+
+ld.vars <- attributes(alias(mod_sat)$Complete)$dimnames[[1]]
+ld.vars
+
+## quitamos tres variables
+formula2 <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
+                   fines_semana+hora_pico+con_heridos+con_muertos+
+                   atropello+incendio+volcamiento+
+                   caida_ocupante+choque+paso_a_nivel+puente+
+                   via_peatonal+ciclo_ruta+glorieta+paso_elevado+
+                   interseccion+lote_o_predio+paso_inferior+
+                   tramo_de_via+tunel+Bajo+Medio_bajo+Medio_alto)
+
+
+mod_sat2 <- lm(formula2, data = try3)
+
+vif(mod_sat2)
+
+
+##quitamos interseccion
+formula3 <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
+                   fines_semana+hora_pico+con_heridos+con_muertos+
+                   atropello+incendio+volcamiento+
+                   caida_ocupante+choque+paso_a_nivel+puente+
+                   interseccion+via_peatonal+ciclo_ruta+glorieta+paso_elevado+
+                   lote_o_predio+paso_inferior+
+                   tunel+Bajo+Medio_bajo+Medio_alto)
+
+mod_sat3 <- lm(formula3, data = try3)
+
+vif(mod_sat3)
+
+
+library(leaps)
+regfull <- regsubsets(formula3, data= try3)
+regsummary = summary(regfull)
+
+plot(regfull, scale = "adjr2")
+plot(regfull, scale = "bic")
+plot(regfull, scale = "Cp")
+
+
+
+mp2 <- randomForest(formula3,
+                   data = train,
+                   importance = TRUE,ntree = 100)
+
+pre2 <- predict(mp2, test)
+msetrain2 <-mean((train$numero_accidentes - predict(mp2))^2)
+
+#MSE del conjunto de prueba
+msetest2 <- mean((test$numero_accidentes - pre2)^2)
+
+#variacion de los MSE
+
+msetest2
+msetrain2
+
+
+cat("R Cuadrado \n")
+R2 = cor(test$numero_accidentes, pre2)^2
+R2
+cat("R Cuadrado ajustado \n")
+1 - ((1 - R2) * (nrow(try3) - 1) / (nrow(try3) - ncol(try3) - 1))
+```
+
+Finalmente decidimos hacer un modelo de regresión lineal pero nos damos cuenta de que el mejor modelo que podemos usar es el primer bosque aleatorio, dado que quitar variables o usar regresión, no ayudan en la efectividad del modelo.
+```{r}
+formula3 <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
+                   fines_semana+hora_pico+con_heridos+con_muertos+
+                   atropello+incendio+volcamiento+
+                   caida_ocupante+choque+paso_a_nivel+puente+
+                   interseccion+via_peatonal+ciclo_ruta+glorieta+paso_elevado+
+                   lote_o_predio+paso_inferior+
+                   tunel+Bajo+Medio_bajo+Medio_alto)
+
+m3 <- lm(formula3, data = try3)
+
+pre3 <- predict(mod_sat3, test)
+
+msetrain3 <-mean((train$numero_accidentes - predict(m3))^2)
+
+#MSE del conjunto de prueba
+msetest3 <- mean((test$numero_accidentes - pre3)^2)
+
+#variacion de los MSE
+
+msetest3
+msetrain3
+
+
+cat("R Cuadrado \n")
+R2 = cor(test$numero_accidentes, pre3)^2
+R2
+cat("R Cuadrado ajustado \n")
+1 - ((1 - R2) * (nrow(try3) - 1) / (nrow(try3) - ncol(try3) - 1))
+
+summary(m3)
+```
+
+
+

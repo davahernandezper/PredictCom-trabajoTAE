@@ -1,0 +1,114 @@
+---
+title: "Untitled"
+author: "David Alejandro Hernandez Perez"
+date: "2/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+cluster
+```{r}
+library(ggplot2)
+library(dplyr)
+library(vegan)
+library(plotly)
+```
+
+```{r}
+
+accidentes <- read.csv("base_accidentes.csv",header = TRUE,sep = ";", dec = ",")
+
+#quitamos las comunas que no tienen localizacion
+accidentes = accidentes %>% filter(!COMUNA %in% c('0',
+'No Georef','Sin Inf',''))
+```
+
+conjuntos con la variable COMUNA
+
+```{r}
+barrios = accidentes %>% distinct(COMUNA, BARRIO)
+
+accidentes$NUM_ACCIDENTES = ave(accidentes$fecha, accidentes$BARRIO, FUN = length)
+
+barrios$NUM_ACCIDENTES = as.integer((accidentes %>% distinct(COMUNA, BARRIO, .keep_all = TRUE))$NUM_ACCIDENTES)
+```
+
+```{r}
+heridos = c()
+for (i in 1:nrow(barrios)) {
+  row = barrios[i, ]
+  heridos = c(heridos, nrow(accidentes[accidentes$GRAVEDAD_ACCIDENTE=="Con heridos" & accidentes$BARRIO==row$BARRIO & accidentes$COMUNA==row$COMUNA,]))
+}
+barrios$HERIDOS = heridos
+
+
+atropellos = c()
+for (i in 1:nrow(barrios)) {
+  row = barrios[i, ]
+  atropellos = c(atropellos, nrow(accidentes[accidentes$CLASE_ACCIDENTE=="Atropello" & accidentes$BARRIO==row$BARRIO & accidentes$COMUNA==row$COMUNA,]))
+}
+barrios$ATROPELLOS = atropellos
+summary(barrios)
+```
+
+
+```{r}
+set.seed(1036955885)
+km.out = kmeans(barrios[, 3:5], 3, nstart = 20)
+km.out
+```
+
+```{r}
+medio = barrios[factor(km.out$cluster) == "1", ]
+medio
+```
+
+```{r}
+bajo = barrios[factor(km.out$cluster) == "2", ]
+bajo
+```
+
+```{r}
+alto = barrios[factor(km.out$cluster) == "3", ]
+alto
+```
+
+
+```{r}
+barrios$RIESGO_NUMERICO = km.out$cluster
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "1"] = "Medio"
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "2"] = "Bajo"
+barrios$RIESGO[barrios$RIESGO_NUMERICO == "3"] = "Alto"
+
+fig = plot_ly(barrios, x = ~NUM_ACCIDENTES, y = ~HERIDOS, z = ~ATROPELLOS,  color = ~RIESGO)
+fig = fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = '# Accidentes'),
+                     yaxis = list(title = '# Heridos'),
+                     zaxis = list(title = '# Atropellos')))
+fig
+```
+
+```{r}
+write.csv(barrios,"riesgo.csv", row.names = FALSE, fileEncoding = "UTF-8")
+```
+
+
+```{r}
+riesgos = c()
+for (i in 1:nrow(accidentes)) {
+  b = nrow(bajo[bajo$BARRIO == accidentes[i,]$BARRIO,])
+  m = nrow(medio[medio$BARRIO == accidentes[i,]$BARRIO,])
+  a = nrow(alto[alto$BARRIO == accidentes[i,]$BARRIO,])
+  if (b > 0) {
+    riesgos = c(riesgos, "Bajo")
+  } else if (m > 0) {
+    riesgos = c(riesgos, "Medio")
+  } else {
+    riesgos = c(riesgos, "Alto")
+  }
+}
+accidentes$RIESGO = as.factor(riesgos)
+```
