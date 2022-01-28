@@ -27,7 +27,7 @@ library(sqldf)
 library(vegan)
 library(plotly)
 library(lubridate)
-
+library(readxl)
 
 ##para los modelos
 require(mixlm)
@@ -269,7 +269,7 @@ riesgo_barrio <- sqldf('
       
       select * from datos')
 
-write.csv(riesgo_barrio,"riesgo_barrio.csv", row.names = FALSE, fileEncoding = "UTF-8")
+#write.csv(riesgo_barrio,"riesgo_barrio.csv", row.names = FALSE, fileEncoding = "UTF-8")
 
 ```
 
@@ -324,6 +324,8 @@ CLASE_ACCIDENTE2 <- as.data.frame(dummy.code(try1$CLASE_ACCIDENTE))
 DISENO2 <-as.data.frame(dummy.code(try1$DISENO))
 GRAVEDAD_ACCIDENTE2 <-as.data.frame(dummy.code(try1$GRAVEDAD_ACCIDENTE))
 riesgo2 <-as.data.frame(dummy.code(try1$GRAVEDAD_ACCIDENTE))
+riesgo2 <-as.data.frame(dummy.code(try1$GRAVEDAD_ACCIDENTE))
+
 
 try2 <- cbind(try1, CLASE_ACCIDENTE2, DISENO2, GRAVEDAD_ACCIDENTE2)
 
@@ -350,10 +352,6 @@ names(try2)[47] = "ponton"
 names(try2)[48] = "con_heridos"
 names(try2)[49] = "solo_danos"
 names(try2)[50] = "con_muertos"
-
-
-
-
 
 
 try2 <- try2[,-19]
@@ -411,7 +409,6 @@ try3 <- sqldf('
       Bajo,
       Medio_bajo,
       Medio_alto,
-      Alto,
       festivo,
       fines_semana,
       hora_pico,
@@ -442,13 +439,78 @@ try3 <- sqldf('
   GROUP BY 2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34
   ')
 
-write.table(try3, file = "base_modelos.csv")
+
+
+
+## PARA EL MODELO 4
+model4_predata <- cbind(try1, CLASE_ACCIDENTE2, GRAVEDAD_ACCIDENTE2)
+
+names(model4_predata)[26] = "festivo"
+names(model4_predata)[27] = "fines_semana"
+names(model4_predata)[30] = "choque"
+names(model4_predata)[31] = "otro"
+names(model4_predata)[32] = "atropello"
+names(model4_predata)[33] = "caida_ocupante"
+names(model4_predata)[34] = "volcamiento"
+names(model4_predata)[35] = "incendio"
+names(model4_predata)[36] = "con_heridos"
+names(model4_predata)[37] = "solo_danos"
+names(model4_predata)[38] = "con_muertos"
+
+
+
+model4_predata <- model4_predata[,-19]
+model4_predata <- model4_predata[,-19]
+
+library(readr) #Leer archivo csv
+library(dplyr) #Manipular el dataset
+library(tidyr) #Separar columna
+library(ggplot2) #Hacer el mapa
+library(DT) #(Opcional) para visualizar la db estilo Excel
+
+model4_predata <- model4_predata %>%
+#Eliminamos parÃ©ntesis
+mutate(Ubicacion2 = gsub('[][]', '', LOCATION)) %>%
+#Separamos columna con separate de tidyr
+separate(Ubicacion2, c("long", "lat"), sep=", ") %>%
+#Convertimos Lat y Long a double o valor numÃ©rico
+mutate(latitude = as.numeric(lat), longitude =as.numeric(long))
+
+
+
+model4_data <- sqldf('
+    SELECT
+      count(*) as numero_accidentes,
+      COMUNA,
+      YEAR,
+      MES,
+      dia,
+      festivo,
+      fines_semana,
+      hora_pico,
+      con_heridos,
+      con_muertos,
+      solo_danos,
+      atropello,
+      incendio,
+      volcamiento,
+      caida_ocupante,
+      choque,
+      otro
+  FROM
+    model4_predata
+  GROUP BY 2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
+  ')
+
+
+#write.table(try3, file = "base_modelos.csv")
 ```
 
 
 
 Iniciamos con un modelo de bosque aleatorio:
 ```{r}
+set.seed(1036)
 train <- try3[which(try3$YEAR %in% c(2014,2015,2016,2017)),]
 test <- try3[which(try3$YEAR %in% c(2018,2019)),]
 
@@ -458,7 +520,7 @@ m1 <- randomForest(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
                    caida_ocupante+choque+otro+paso_a_nivel+puente+
                    via_peatonal+ciclo_ruta+glorieta+paso_elevado+
                    interseccion+lote_o_predio+paso_inferior+
-                   tramo_de_via+tunel+ponton+Bajo+Medio_bajo+Medio_alto+Alto,
+                   tramo_de_via+tunel+ponton+Bajo+Medio_bajo+Medio_alto,
                    data = train,
                    importance = TRUE,ntree = 100)
 
@@ -482,7 +544,19 @@ R2 = cor(test$numero_accidentes, pre1)^2
 R2
 cat("R Cuadrado ajustado \n")
 1 - ((1 - R2) * (nrow(try3) - 1) / (nrow(try3) - ncol(try3) - 1))
+
+R2 <- function(y_real,y_pred){
+  y_bar <- mean(y_real)
+  return(1- sum((y_real - y_pred)^2)/sum((y_real - y_bar)^2))
+}
+
+library(Metrics)
+  mae1 <- mae(test[[1]],pre1)
+  rmse1 <- rmse(test[[1]],pre1)
+
 ```
+
+
 Luego como vemos que tenemos un R cuadrado y el R cuadrado ajustado iguales a 0.48933 y 0.48924 respectivamente, decidimos mirar que variables no estan ayudandonos en el modelo:
 ```{r}
 library(car)
@@ -493,13 +567,14 @@ formula <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
                    caida_ocupante+choque+otro+paso_a_nivel+puente+
                    via_peatonal+ciclo_ruta+glorieta+paso_elevado+
                    interseccion+lote_o_predio+paso_inferior+
-                   tramo_de_via+tunel+ponton+Bajo+Medio_bajo+Medio_alto+Alto)
+                   tramo_de_via+tunel+ponton+Bajo+Medio_bajo+Medio_alto)
 
 mod_sat <- lm(formula, data = try3)
 
 summary(mod_sat)
 
-coras <-  cor(try3)
+
+#coras <-  cor(try3)
 
 ld.vars <- attributes(alias(mod_sat)$Complete)$dimnames[[1]]
 ld.vars
@@ -516,19 +591,22 @@ formula2 <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
 
 mod_sat2 <- lm(formula2, data = try3)
 
+summary(mod_sat2)
 vif(mod_sat2)
 
 
 ##quitamos interseccion
-formula3 <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
+formula3 <- as.formula(numero_accidentes~YEAR+MES+dia+COMUNA+festivo+
                    fines_semana+hora_pico+con_heridos+con_muertos+
                    atropello+incendio+volcamiento+
                    caida_ocupante+choque+paso_a_nivel+puente+
                    interseccion+via_peatonal+ciclo_ruta+glorieta+paso_elevado+
                    lote_o_predio+paso_inferior+
-                   tunel+Bajo+Medio_bajo+Medio_alto)
+                   tunel)
+                   #+Bajo+Medio_bajo+Medio_alto)
 
 mod_sat3 <- lm(formula3, data = try3)
+summary(mod_sat3)
 
 vif(mod_sat3)
 
@@ -564,6 +642,10 @@ R2 = cor(test$numero_accidentes, pre2)^2
 R2
 cat("R Cuadrado ajustado \n")
 1 - ((1 - R2) * (nrow(try3) - 1) / (nrow(try3) - ncol(try3) - 1))
+
+
+mae2 <- mae(test[[1]],pre2)
+rmse2 <- rmse(test[[1]],pre2)
 ```
 
 Finalmente decidimos hacer un modelo de regresión lineal pero nos damos cuenta de que el mejor modelo que podemos usar es el primer bosque aleatorio, dado que quitar variables o usar regresión, no ayudan en la efectividad del modelo.
@@ -578,7 +660,7 @@ formula3 <- as.formula(numero_accidentes~YEAR+MES+dia+numcomuna2+festivo+
 
 m3 <- lm(formula3, data = try3)
 
-pre3 <- predict(mod_sat3, test)
+pre3 <- predict(m3, test)
 
 msetrain3 <-mean((train$numero_accidentes - predict(m3))^2)
 
@@ -598,7 +680,70 @@ cat("R Cuadrado ajustado \n")
 1 - ((1 - R2) * (nrow(try3) - 1) / (nrow(try3) - ncol(try3) - 1))
 
 summary(m3)
+
+
+mae3 <- mae(test[[1]],pre3)
+rmse3 <- rmse(test[[1]],pre3)
+
+
+mae1 <- mae(test[[1]],pre1)
+rmse1 <- rmse(test[[1]],pre1)
 ```
 
+Modelo final
+```{r}
+set.seed(1036)
+train4 <- model4_data[which(model4_data$YEAR %in% c(2014,2015,2016,2017)),]
+test4 <- model4_data[which(model4_data$YEAR %in% c(2018,2019)),]
+
+m4 <- randomForest(numero_accidentes~.,
+                   data = train4,
+                   importance = TRUE,ntree = 100)
+
+
+pre4 <- predict(m4, test4)
+
+msetrain4 <-mean((train4$numero_accidentes - predict(m4))^2)
+
+#MSE del conjunto de prueba
+msetest4 <- mean((test4$numero_accidentes - pre4)^2)
+
+#variacion de los MSE
+
+msetest4
+msetrain4
+
+
+cat("R Cuadrado \n")
+R2 = cor(test$numero_accidentes, pre4)^2
+R2
+cat("R Cuadrado ajustado \n")
+1 - ((1 - R2) * (nrow(model4_data) - 1) / (nrow(model4_data) - ncol(model4_data) - 1))
+
+
+library(Metrics)
+mae4 <- mae(test[[1]],pre4)
+rmse4 <- rmse(test[[1]],pre4)
+```
+
+Guardamos el modelo
+```{r}
+saveRDS(m4, file = "./rf.rda")
+```
+
+R cuadrados del modelo
+```{r}
+y_test <- test$numero_accidentes
+
+R2 <- function(y_real,y_pred){
+  y_bar <- mean(y_real)
+  return(1- sum((y_real - y_pred)^2)/sum((y_real - y_bar)^2))
+}
+
+r_modelo1 <- R2(y_test, pre1)
+r_modelo2 <- R2(y_test, pre2)
+r_modelo3 <- R2(y_test, pre3)
+r_modelo4 <- R2(y_test, pre4)
+```
 
 
